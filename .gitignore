@@ -1,0 +1,30 @@
+# ---- macOS / Xcode ----
+.DS_Store
+xcuserdata/
+*.xcuserstate
+*.xcscmblueprint
+*.xccheckout
+build/
+DerivedData/
+*.moved-aside
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# ---- Swift Package Manager ----
+.build/
+.swiftpm/
+Package.resolved
+
+# ---- Python（图标生成脚本）----
+__pycache__/
+*.pyc
+
+# ---- 编辑器 ----
+.vscode/
+.idea/
+*.swp
+
+# ---- 本地临时 ----
+*.log
