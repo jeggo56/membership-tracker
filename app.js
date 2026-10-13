@@ -281,12 +281,24 @@ function renderStats(){
 /* ---------- 页面：设置 ---------- */
 function renderSettings(){
   const active = store.data.filter(m=>m.status==='active').length;
+  // iOS 未安装到主屏幕时，显示引导横幅
+  const needInstall = isIOS() && !isStandalone();
   screenEl.innerHTML = `
   <div class="page-head"><div class="page-title">我的</div></div>
   <div class="profile-head">
     <div class="avatar">会</div>
     <div><div class="pname">我的会员账户</div><div class="pdesc">${active} 个在订阅 · 数据存于本机</div></div>
   </div>
+  ${needInstall ? `
+  <div class="alert-strip" style="cursor:pointer" onclick="installApp()">
+    <div class="a-ico">📲</div>
+    <div class="a-txt">要收到<span>到期提醒</span>？iOS 需先<b style="color:var(--accent)">添加到主屏幕</b><br>
+      <span style="color:var(--accent);font-size:12.5px">点此查看步骤 ›</span></div>
+  </div>` : `
+  <div class="alert-strip" style="background:linear-gradient(100deg,rgba(52,211,153,.16),rgba(52,211,153,.08));border-color:rgba(52,211,153,.28)">
+    <div class="a-ico" style="background:rgba(52,211,153,.22)">✅</div>
+    <div class="a-txt">通知环境就绪，可开启<span>到期提醒</span></div>
+  </div>`}
   <div class="set-group">
     <div class="set-item" onclick="toggleNotify()">
       <div class="set-ico" style="background:rgba(251,146,60,.18);color:#fb923c">🔔</div>
@@ -518,7 +530,8 @@ const _settingsStore = {
 window.settings = _settingsStore.data;
 
 function notifyLabel(){
-  if(!('Notification' in window)) return '不支持';
+  if(isIOS() && !isStandalone()) return '需先安装';
+  if(!('Notification' in window)) return isIOS() ? '需先安装' : '不支持';
   if(Notification.permission==='granted' && settings.notify) return '已开启';
   if(Notification.permission==='denied') return '已拒绝';
   return '未开启';
@@ -529,17 +542,91 @@ function installLabel(){
 }
 function isIOS(){ return /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform==='MacIntel' && navigator.maxTouchPoints>1); }
 
+/* ---------- 判断当前运行环境 ---------- */
+function isStandalone(){
+  return window.matchMedia('(display-mode: standalone)').matches
+      || window.matchMedia('(display-mode: fullscreen)').matches
+      || window.navigator.standalone === true;
+}
+// iOS 上通知能力检测
+function iosNotifySupport(){
+  if(!isIOS()) return { ok:true };
+  const ver = (navigator.userAgent.match(/OS (\d+)[_.](\d+)/) || []);
+  const major = parseInt(ver[1]||'0', 10);
+  if(!('Notification' in window)) return { ok:false, reason:'系统版本过低', hint:'iOS 需要 16.4 及以上版本才支持网页通知。请升级系统后重试。' };
+  if(!isStandalone()) return {
+    ok:false, reason:'需要先添加到主屏幕',
+    hint:'iOS 上网页通知只能在「添加到主屏幕」后使用。请按下方步骤把本页装成 App，从桌面图标打开，再开启提醒。'
+  };
+  return { ok:true };
+}
+
 /* ---------- 开关通知 ---------- */
 async function toggleNotify(){
-  if(!('Notification' in window)){ toast('当前浏览器不支持通知'); return; }
+  // iOS 场景判断
+  const sup = iosNotifySupport();
+  if(!sup.ok){
+    iosGuide(sup.reason, sup.hint);
+    return;
+  }
+
+  if(!('Notification' in window)){
+    if(isIOS()){ iosGuide('需要先添加到主屏幕','iOS 上网页通知只能在「添加到主屏幕」后使用，请先安装到桌面。'); }
+    else toast('当前浏览器不支持通知');
+    return;
+  }
+
+  // PWA 模式但还没授权
   if(Notification.permission==='granted' && settings.notify){
     settings.notify = false; _settingsStore.save(); toast('已关闭到期提醒');
   }else{
-    const perm = await Notification.requestPermission();
-    if(perm==='granted'){ settings.notify = true; _settingsStore.save(); toast('已开启到期提醒'); scheduleReminderCheck(); }
-    else toast('通知权限被拒绝，请在浏览器设置中开启');
+    let perm = Notification.permission;
+    if(perm !== 'granted'){
+      try{ perm = await Notification.requestPermission(); }catch(e){ perm='denied'; }
+    }
+    if(perm==='granted'){
+      settings.notify = true; _settingsStore.save();
+      toast('已开启到期提醒');
+      scheduleReminderCheck();
+      checkDueAndNotify(false);
+    }else if(perm==='denied'){
+      if(isIOS()) iosGuide('通知权限被拒绝','请到 iPhone「设置 → 通知 → 会员管家」中手动允许通知。');
+      else toast('通知权限被拒绝，请在浏览器设置中开启');
+    }else{
+      toast('未获得通知权限');
+    }
   }
   render();
+}
+
+/* ---------- iOS 引导弹层 ---------- */
+function iosGuide(title, hint){
+  openSheet(`
+    <div class="sheet-head"><h3>${esc(title)}</h3><button class="x" onclick="closeSheet()">✕</button></div>
+    <div style="padding:0 22px 10px">
+      <div style="background:rgba(251,146,60,.14);border:1px solid rgba(251,146,60,.3);border-radius:15px;padding:14px 16px;margin-bottom:18px;color:var(--txt);font-size:14px;line-height:1.6;font-weight:600">
+        <span style="font-size:17px">⚠️</span> ${esc(hint)}
+      </div>
+      <div style="font-size:14px;font-weight:800;color:var(--txt);margin-bottom:12px">在 iPhone 上开启提醒的步骤：</div>
+      <div style="display:flex;flex-direction:column;gap:14px">
+        ${iosStep('1','用 <b style="color:var(--txt)">Safari</b> 打开本页（必须在 Safari，Chrome 不行）')}
+        ${iosStep('2','点击底部中间的 <b style="color:var(--accent)">分享按钮</b> <span style="font-size:17px">⬆️</span>')}
+        ${iosStep('3','在菜单里选择 <b style="color:var(--accent)">「添加到主屏幕」</b> <span style="font-size:17px">➕</span>')}
+        ${iosStep('4','点右上角 <b style="color:var(--accent)">「添加」</b>，桌面会出现「会员管家」图标')}
+        ${iosStep('5','从<b style="color:var(--txt)">桌面图标</b>打开（不是 Safari），再进入「我的 → 到期提醒」开启')}
+      </div>
+      <div style="margin-top:20px;background:rgba(108,140,255,.12);border-radius:14px;padding:13px 15px;font-size:12.5px;color:var(--txt-2);line-height:1.65;font-weight:500">
+        💡 为什么要这样做？iOS 系统规定：网页通知只有在「安装到主屏幕」后才会被允许。这是苹果的限制，所有 PWA 应用都一样。
+      </div>
+      <button class="btn" style="margin-top:18px" onclick="closeSheet()">我知道了</button>
+    </div>
+  `);
+}
+function iosStep(n, html){
+  return `<div style="display:flex;gap:12px;align-items:flex-start">
+    <div style="flex:0 0 24px;width:24px;height:24px;border-radius:50%;background:var(--accent);color:#fff;font-size:13px;font-weight:800;display:grid;place-items:center">${n}</div>
+    <div style="font-size:14px;line-height:1.6;color:var(--txt-2);font-weight:500;padding-top:1px">${html}</div>
+  </div>`;
 }
 function pickNotifyDay(){
   const opts=[1,2,3,5,7];
@@ -552,9 +639,13 @@ function pickNotifyTime(){
   <div class="form">${opts.map(t=>`<button class="btn ${settings.notifyTime===t?'':'ghost'}" style="margin-top:0" onclick="settings.notifyTime='${t}';_settingsStore.save();closeSheet();render();toast('已设为 ${t}')">${t}</button>`).join('')}</div>`);
 }
 async function testNotify(){
-  if(!('Notification' in window)){ toast('当前浏览器不支持通知'); return; }
+  const sup = iosNotifySupport();
+  if(!sup.ok){ iosGuide(sup.reason, sup.hint); return; }
+  if(!('Notification' in window)){ toast(isIOS()?'请先添加到主屏幕':'当前浏览器不支持通知'); return; }
   if(Notification.permission!=='granted'){
-    const p=await Notification.requestPermission(); if(p!=='granted'){ toast('请先允许通知权限'); return; }
+    let p='default';
+    try{ p=await Notification.requestPermission(); }catch(e){ p='denied'; }
+    if(p!=='granted'){ toast('请先允许通知权限'); return; }
   }
   await showNotification('会员管家 · 测试提醒', '这是一条测试通知。到期前一天会自动提醒你 ✅', 'test');
   toast('已发送测试提醒');
@@ -617,18 +708,11 @@ function scheduleReminderCheck(){
 let deferredPrompt=null;
 window.addEventListener('beforeinstallprompt', e=>{ e.preventDefault(); deferredPrompt=e; });
 async function installApp(){
-  if(window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone){ toast('已经安装到主屏幕了 🎉'); return; }
+  if(isStandalone()){ toast('已经安装到主屏幕了 🎉'); return; }
   if(deferredPrompt){ deferredPrompt.prompt(); const r=await deferredPrompt.userChoice; deferredPrompt=null; toast(r.outcome==='accepted'?'正在安装…':'已取消'); return; }
-  // iOS Safari 引导
+  // iOS Safari 引导（复用统一的引导弹层）
   if(isIOS()){
-    openSheet(`<div class="sheet-head"><h3>添加到主屏幕</h3><button class="x" onclick="closeSheet()">✕</button></div>
-    <div style="padding:0 22px 10px;color:var(--txt-2);font-size:15px;line-height:1.9;font-weight:500">
-      在 iPhone 上用 <b style="color:var(--txt)">Safari</b> 打开本页：<br>
-      1️⃣ 点击底部中间的 <b style="color:var(--accent)">分享按钮</b> ⬆️<br>
-      2️⃣ 向下滑动，选择 <b style="color:var(--accent)">「添加到主屏幕」</b> ➕<br>
-      3️⃣ 点右上角「添加」<br><br>
-      完成后，桌面会出现「会员管家」图标，打开即全屏运行，像原生 App 一样。
-    </div>`);
+    iosGuide('添加到主屏幕', '在 iPhone 上把本页装成 App，即可开启到期提醒、全屏使用。');
     return;
   }
   toast('请用浏览器菜单里的「安装应用」或「添加到主屏幕」');
